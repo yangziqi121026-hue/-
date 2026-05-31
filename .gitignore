@@ -1,0 +1,26 @@
+# 密钥与环境
+.env
+
+# 数据缓存产物（data/ 现为代码包，仅忽略缓存文件，不忽略源码）
+data/*.pkl
+data/*.db
+data/*.db-journal
+data/hist/
+
+# 准实时扫描缓存（只读快照）
+realtime_scan_cache/*
+!realtime_scan_cache/.gitkeep
+
+# 产物：导出 / 图表 / 报告（保留目录与 .gitkeep，不入库具体产物）
+*_exports/*
+!*_exports/.gitkeep
+*_charts/*
+!*_charts/.gitkeep
+*_reports/*
+!*_reports/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
