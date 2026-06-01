@@ -42,6 +42,9 @@ _PC_EXPORTS = config.output_dir("pool_compare", "exports")
 _PD_REPORTS = config.output_dir("pool_diagnosis", "reports")
 _PD_EXPORTS = config.output_dir("pool_diagnosis", "exports")
 
+_OB_REPORTS = config.output_dir("observation", "reports")
+_OB_EXPORTS = config.output_dir("observation", "exports")
+
 
 # =====================================================
 # 数据读取（只读本地产物）
@@ -159,6 +162,24 @@ def load_latest_pool_diagnosis() -> Optional[Dict]:
     return {"token": token, "pool": pool, "csv_path": csv,
             "md_path": md if md else None, "df": df, "md_text": md_text,
             "watch": _md_section(md_text, "替补候选观察名单（成分内未被选中交易的标的）")}
+
+
+def load_latest_observation_plan() -> Optional[Dict]:
+    csv = _latest(_OB_EXPORTS, "observation_plan_*.csv")
+    if csv is None:
+        return None
+    token = _token_of(csv)
+    m = re.search(r"observation_plan_(.+?)_\d{8}_\d{6}", csv.name)
+    pool = m.group(1) if m else "?"
+    mds = sorted(_OB_REPORTS.glob(f"observation_plan_*_{token}.md"))
+    md = mds[0] if mds else None
+    try:
+        df = pd.read_csv(csv, encoding="utf-8-sig", dtype={"代码": str})
+    except Exception:
+        df = pd.DataFrame()
+    return {"token": token, "pool": pool, "csv_path": csv,
+            "md_path": md if md else None, "df": df,
+            "md_text": md.read_text(encoding="utf-8") if md else ""}
 
 
 # =====================================================
@@ -456,6 +477,52 @@ def render_pool_diagnosis_page() -> Optional[str]:
     return _page("股票池成分贡献诊断", "".join(parts))
 
 
+def _observation_home_card() -> str:
+    ob = load_latest_observation_plan()
+    if ob is None:
+        return ('<div class="card"><h2>候选股观察计划</h2>'
+                '<div class="empty">暂无观察计划。运行：<br>'
+                '<code>python -m backtest_agent_v1.observation_plan_cli --pool tech_30_v2</code>'
+                '</div></div>')
+    n = 0 if ob["df"].empty else len(ob["df"])
+    return (f'<div class="card"><h2>候选股观察计划</h2>'
+            f'<p class="muted">最新观察池：{_esc(ob["pool"])}　|　候选 {n} 只'
+            f'（研究参考，非买卖建议）</p>'
+            f'<div class="links"><a href="/observation-plan">查看观察计划</a></div></div>')
+
+
+def render_observation_plan_page() -> Optional[str]:
+    ob = load_latest_observation_plan()
+    if ob is None:
+        return None
+    parts = [f'<div class="card"><h2>候选股观察计划（{_esc(ob["pool"])}）</h2>'
+             '<div class="links"><a href="/">← 返回首页</a></div>'
+             '<p class="muted">所有「观察位/低吸位/突破位/止损参考位/目标位」均为研究参考价位，'
+             '用于跟踪观察，<b>不构成任何买入/卖出建议、不构成交易指令</b>。本页只读、无交易按钮。</p></div>']
+    df = ob["df"]
+    if df.empty:
+        parts.append('<div class="card"><div class="empty">本次无候选。</div></div>')
+    else:
+        show = [c for c in ["排名", "代码", "名称", "当前收盘价", "观察位", "低吸位", "突破位",
+                            "止损参考位", "第一目标位", "第二目标位", "仓位上限", "失效条件",
+                            "风险提示", "数据时间", "观察分级"] if c in df.columns]
+        head = "".join(f"<th>{_esc(c)}</th>" for c in show)
+        body = ""
+        for _, r in df.iterrows():
+            tds = "".join(
+                f'<td class="{"num" if c in ("当前收盘价","观察位","突破位","止损参考位") else ""}">'
+                f'{_esc("" if pd.isna(r.get(c)) else r.get(c))}</td>' for c in show)
+            body += f"<tr>{tds}</tr>"
+        parts.append(f'<div class="card"><h2>候选观察总览</h2>'
+                     f'<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>')
+    links = []
+    if ob["md_path"]:
+        links.append('<a href="/observation-plan/download/report">下载观察计划 .md</a>')
+    links.append('<a href="/observation-plan/download/csv">下载观察计划 .csv</a>')
+    parts.append(f'<div class="card"><h2>报告与导出</h2><div class="links">{"".join(links)}</div></div>')
+    return _page("候选股观察计划", "".join(parts))
+
+
 def render_home() -> str:
     scan = load_latest_scan()
     if scan is None:
@@ -465,7 +532,7 @@ def render_home() -> str:
                    '<code>python -m backtest_agent_v1.scan_cli --model strong --mode loose '
                    '--symbols 600519,000858 --limit 50</code></div></div>' +
                    _selection_backtest_home_card() + _pool_compare_home_card() +
-                   _pool_diagnosis_home_card())
+                   _pool_diagnosis_home_card() + _observation_home_card())
         return _page("系统1 只读 Dashboard", content)
     content = (
         _intro_card() + _disclaimer_card() + _meta_card(scan) +
@@ -473,7 +540,7 @@ def render_home() -> str:
         _risk_card(scan["df"], scan["general_risk"]) +
         _reject_card(scan["reject_summary"]) + _links_card(scan) +
         _selection_backtest_home_card() + _pool_compare_home_card() +
-        _pool_diagnosis_home_card()
+        _pool_diagnosis_home_card() + _observation_home_card()
     )
     return _page("系统1 只读 Dashboard", content)
 
@@ -564,6 +631,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             pdg = load_latest_pool_diagnosis()
             if pdg:
                 return self._send_file(pdg["csv_path"], "text/csv; charset=utf-8", download=True)
+            return self._not_found()
+        if path == "/observation-plan":
+            page = render_observation_plan_page()
+            return self._send_html(page) if page else self._not_found()
+        if path == "/observation-plan/download/report":
+            ob = load_latest_observation_plan()
+            if ob and ob["md_path"]:
+                return self._send_file(ob["md_path"], "text/markdown; charset=utf-8", download=True)
+            return self._not_found()
+        if path == "/observation-plan/download/csv":
+            ob = load_latest_observation_plan()
+            if ob:
+                return self._send_file(ob["csv_path"], "text/csv; charset=utf-8", download=True)
             return self._not_found()
         return self._not_found()
 
