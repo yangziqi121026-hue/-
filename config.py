@@ -58,6 +58,10 @@ OUTPUT_DIRS = {
         "exports": PROJECT_ROOT / "realtime_scan_exports",
         "cache": PROJECT_ROOT / "realtime_scan_cache",
     },
+    "pool_compare": {  # 股票池横向对比（只汇总已有回测结果，不重新回测）
+        "reports": PROJECT_ROOT / "pool_compare_reports",
+        "exports": PROJECT_ROOT / "pool_compare_exports",
+    },
 }
 
 # ---------- 基础层目录 ----------

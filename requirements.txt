@@ -11,6 +11,9 @@ numpy>=1.24
 # 配置
 python-dotenv>=1.0
 
+# 回测净值图表（只读绘图，Agg 后端）
+matplotlib>=3.7
+
 # 看板（轻量，按需启用）
 # streamlit>=1.30
 # plotly>=5.20

@@ -26,25 +26,17 @@ except Exception:
 import config
 from data import AkshareDataSource
 
-from . import selection_models
+from . import selection_models, stock_pools
 from .stock_scanner import StockScanner
-
-
-def _parse_symbols(spec: str) -> list:
-    out, seen = [], set()
-    for tok in re.split(r"[,\s]+", spec or ""):
-        m = re.search(r"\d{6}", tok)
-        if m and m.group(0) not in seen:
-            seen.add(m.group(0))
-            out.append(m.group(0))
-    return out
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="模型A 短线强势股扫描器（只读，不下单）")
     p.add_argument("--model", default="strong", help="选股模型（当前仅支持 strong=模型A）")
     p.add_argument("--mode", default="loose", choices=list(selection_models.MODES), help="strict / loose")
-    p.add_argument("--symbols", required=True, help="逗号分隔的 6 位代码")
+    p.add_argument("--symbols", default=None, help="逗号分隔的 6 位代码（与 --pool 二选一；同传优先此项）")
+    p.add_argument("--pool", default=None, choices=stock_pools.list_pools(),
+                   help="预设股票池：" + " / ".join(stock_pools.list_pools()))
     p.add_argument("--limit", type=int, default=None, help="截断股票池规模")
     p.add_argument("--no-industry", action="store_true", help="跳过行业字段抓取（更快）")
     args = p.parse_args(argv)
@@ -54,10 +46,11 @@ def main(argv=None) -> int:
               file=sys.stderr)
         return 2
 
-    symbols = _parse_symbols(args.symbols)
+    symbols, source, note = stock_pools.resolve(args.symbols, args.pool)
     if not symbols:
-        print("未解析到有效 A 股代码。", file=sys.stderr)
+        print(f"未得到有效标的：{note or '请提供 --symbols 或 --pool'}", file=sys.stderr)
         return 2
+    print(f"标的来源：{source}{('  ' + note) if note else ''}")
 
     config.assert_readonly()
     print(f"模型A 短线强势扫描｜模式 {args.mode}｜股票池 {len(symbols)} 只"

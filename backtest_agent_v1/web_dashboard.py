@@ -32,6 +32,13 @@ _SCAN_EXPORTS = config.output_dir("scan", "exports")
 _CSV_GLOB = "strong_stock_scan_*.csv"
 _MD_GLOB = "strong_stock_scan_*.md"
 
+_SB_REPORTS = config.output_dir("selection_backtest", "reports")
+_SB_EXPORTS = config.output_dir("selection_backtest", "exports")
+_SB_CHARTS = config.output_dir("selection_backtest", "charts")
+
+_PC_REPORTS = config.output_dir("pool_compare", "reports")
+_PC_EXPORTS = config.output_dir("pool_compare", "exports")
+
 
 # =====================================================
 # 数据读取（只读本地产物）
@@ -89,6 +96,47 @@ def load_latest_scan() -> Optional[Dict]:
         "reject_summary": _md_section(md_text, "未入选原因摘要"),
         "general_risk": _md_section(md_text, "风险提示"),
     }
+
+
+def load_latest_selection_backtest() -> Optional[Dict]:
+    summ = _latest(_SB_EXPORTS, "modelA_selection_summary_*.csv")
+    if summ is None:
+        return None
+    token = _token_of(summ)
+    trades = _SB_EXPORTS / f"modelA_selection_trades_{token}.csv"
+    md = _SB_REPORTS / f"modelA_selection_backtest_{token}.md"
+    chart = _SB_CHARTS / f"modelA_selection_equity_{token}.png"
+
+    def _read(p: Path) -> pd.DataFrame:
+        try:
+            return pd.read_csv(p, encoding="utf-8-sig") if p.exists() else pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
+
+    return {
+        "token": token, "summary_path": summ,
+        "trades_path": trades if trades.exists() else None,
+        "md_path": md if md.exists() else None,
+        "chart_path": chart if chart.exists() else None,
+        "summary_df": _read(summ), "trades_df": _read(trades),
+        "md_text": md.read_text(encoding="utf-8") if md.exists() else "",
+    }
+
+
+def load_latest_pool_compare() -> Optional[Dict]:
+    csv = _latest(_PC_EXPORTS, "pool_compare_*.csv")
+    if csv is None:
+        return None
+    token = _token_of(csv)
+    md = _PC_REPORTS / f"pool_compare_{token}.md"
+    try:
+        df = pd.read_csv(csv, encoding="utf-8-sig")
+    except Exception:
+        df = pd.DataFrame()
+    md_text = md.read_text(encoding="utf-8") if md.exists() else ""
+    return {"token": token, "csv_path": csv, "md_path": md if md.exists() else None,
+            "df": df, "md_text": md_text,
+            "conclusion": _md_section(md_text, "结论（数据驱动）")}
 
 
 # =====================================================
@@ -217,6 +265,120 @@ def _links_card(scan: Dict) -> str:
             f'<p class="muted">文件：{_esc(scan["csv_path"].name)}</p></div>')
 
 
+def _selection_backtest_home_card() -> str:
+    sbt = load_latest_selection_backtest()
+    if sbt is None:
+        return ('<div class="card"><h2>选股模型回测</h2>'
+                '<div class="empty">暂无回测结果。运行：<br>'
+                '<code>python -m backtest_agent_v1.selection_backtest_cli --model strong '
+                '--mode loose --symbols 600519,000858 --period 6m</code></div></div>')
+    df = sbt["summary_df"]
+    kv = {str(r["指标"]): str(r["数值"]) for _, r in df.iterrows()} if not df.empty else {}
+    keys = ["交易次数", "总收益率", "年化收益率", "胜率", "盈亏比", "最大回撤"]
+    cells = "".join(
+        f'<div class="meta-item"><div class="k">{_esc(k)}</div>'
+        f'<div class="v">{_esc(kv.get(k, "—"))}</div></div>' for k in keys if k in kv)
+    return (f'<div class="card"><h2>选股模型回测</h2>'
+            f'<div class="meta-grid">{cells}</div>'
+            f'<div class="links" style="margin-top:14px">'
+            f'<a href="/selection-backtest">查看回测详情</a></div></div>')
+
+
+def render_selection_backtest_page() -> Optional[str]:
+    sbt = load_latest_selection_backtest()
+    if sbt is None:
+        return None
+    parts = ['<div class="card"><h2>选股模型回测（模型A · 历史模拟）</h2>'
+             '<div class="links"><a href="/">← 返回首页</a></div>'
+             '<p class="muted">历史模拟复盘，含模拟退出规则与仓位，'
+             '不代表未来，不构成任何买入/卖出建议。本页只读。</p></div>']
+
+    # 指标表
+    df = sbt["summary_df"]
+    if not df.empty:
+        rows = "".join(f'<tr><td>{_esc(r["指标"])}</td>'
+                       f'<td class="num">{_esc(r["数值"])}</td></tr>' for _, r in df.iterrows())
+        parts.append(f'<div class="card"><h2>回测指标</h2><table><thead><tr>'
+                     f'<th>指标</th><th>数值</th></tr></thead><tbody>{rows}</tbody></table></div>')
+
+    # 净值曲线
+    if sbt["chart_path"]:
+        parts.append('<div class="card"><h2>净值曲线</h2>'
+                     '<img src="/selection-backtest/chart" alt="净值曲线" '
+                     'style="width:100%;border-radius:8px;border:1px solid var(--border)"></div>')
+
+    # 交易明细
+    tdf = sbt["trades_df"]
+    if not tdf.empty:
+        cols = [c for c in ["序号", "代码", "名称", "入场日", "出场日", "收益率%",
+                            "持仓天数", "退出原因", "曾达第一目标"] if c in tdf.columns]
+        head = "".join(f"<th>{_esc(c)}</th>" for c in cols)
+        body = ""
+        for _, r in tdf.iterrows():
+            tds = "".join(f'<td class="{"num" if c in ("收益率%","持仓天数","序号") else ""}">'
+                          f'{_esc(r.get(c, ""))}</td>' for c in cols)
+            body += f"<tr>{tds}</tr>"
+        parts.append(f'<div class="card"><h2>交易明细（{len(tdf)} 笔）</h2>'
+                     f'<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>')
+
+    # 链接
+    links = []
+    if sbt["md_path"]:
+        links.append('<a href="/selection-backtest/download/report">下载回测报告 .md</a>')
+    links.append('<a href="/selection-backtest/download/summary">下载汇总 .csv</a>')
+    if sbt["trades_path"]:
+        links.append('<a href="/selection-backtest/download/trades">下载交易明细 .csv</a>')
+    parts.append(f'<div class="card"><h2>报告与导出</h2>'
+                 f'<div class="links">{"".join(links)}</div></div>')
+    return _page("选股模型回测", "".join(parts))
+
+
+def _pool_compare_home_card() -> str:
+    pc = load_latest_pool_compare()
+    if pc is None:
+        return ('<div class="card"><h2>股票池横向对比</h2>'
+                '<div class="empty">暂无对比报告。运行：<br>'
+                '<code>python -m backtest_agent_v1.pool_compare_cli</code></div></div>')
+    best = ""
+    m = re.search(r"当前最佳适配池：([^\s（(]+)", pc["md_text"])
+    if m:
+        best = m.group(1)
+    return (f'<div class="card"><h2>股票池横向对比</h2>'
+            f'<p>当前最佳适配池（数据驱动）：<b class="code">{_esc(best or "—")}</b></p>'
+            f'<div class="links"><a href="/pool-compare">查看对比表</a></div></div>')
+
+
+def render_pool_compare_page() -> Optional[str]:
+    pc = load_latest_pool_compare()
+    if pc is None:
+        return None
+    parts = ['<div class="card"><h2>股票池横向对比（模型A 选股回测）</h2>'
+             '<div class="links"><a href="/">← 返回首页</a></div>'
+             '<p class="muted">仅汇总已有回测结果，未重新跑回测；历史模拟，不构成任何买入/卖出建议。</p></div>']
+    df = pc["df"]
+    if not df.empty:
+        cols = list(df.columns)
+        head = "".join(f"<th>{_esc(c)}</th>" for c in cols)
+        body = ""
+        for _, r in df.iterrows():
+            tds = "".join(f'<td class="{"num" if c not in ("排名","股票池","数据状态") else ""}">'
+                          f'{_esc("" if pd.isna(r.get(c)) else r.get(c))}</td>' for c in cols)
+            body += f"<tr>{tds}</tr>"
+        parts.append(f'<div class="card"><h2>对比表</h2>'
+                     f'<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>')
+    if pc["conclusion"]:
+        items = [re.sub(r"^[-*]\s*", "", ln).strip()
+                 for ln in pc["conclusion"].splitlines() if ln.strip().startswith(("-", "*"))]
+        lis = "".join(f"<li>{_esc(x)}</li>" for x in items)
+        parts.append(f'<div class="card"><h2>结论（数据驱动）</h2><ul class="reasons">{lis}</ul></div>')
+    links = []
+    if pc["md_path"]:
+        links.append('<a href="/pool-compare/download/report">下载对比报告 .md</a>')
+    links.append('<a href="/pool-compare/download/csv">下载对比表 .csv</a>')
+    parts.append(f'<div class="card"><h2>报告与导出</h2><div class="links">{"".join(links)}</div></div>')
+    return _page("股票池横向对比", "".join(parts))
+
+
 def render_home() -> str:
     scan = load_latest_scan()
     if scan is None:
@@ -224,13 +386,15 @@ def render_home() -> str:
                    '<div class="card"><h2>暂无扫描结果</h2>'
                    '<div class="empty">scan_exports 下还没有扫描结果。请先运行：<br>'
                    '<code>python -m backtest_agent_v1.scan_cli --model strong --mode loose '
-                   '--symbols 600519,000858 --limit 50</code></div></div>')
+                   '--symbols 600519,000858 --limit 50</code></div></div>' +
+                   _selection_backtest_home_card() + _pool_compare_home_card())
         return _page("系统1 只读 Dashboard", content)
     content = (
         _intro_card() + _disclaimer_card() + _meta_card(scan) +
         _candidates_card(scan["df"]) + _reasons_card(scan["df"]) +
         _risk_card(scan["df"], scan["general_risk"]) +
-        _reject_card(scan["reject_summary"]) + _links_card(scan)
+        _reject_card(scan["reject_summary"]) + _links_card(scan) +
+        _selection_backtest_home_card() + _pool_compare_home_card()
     )
     return _page("系统1 只读 Dashboard", content)
 
@@ -272,6 +436,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
             scan = load_latest_scan()
             if scan and scan["md_path"]:
                 return self._send_file(scan["md_path"], "text/markdown; charset=utf-8", download=True)
+            return self._not_found()
+        if path == "/selection-backtest":
+            page = render_selection_backtest_page()
+            return self._send_html(page) if page else self._not_found()
+        if path == "/selection-backtest/chart":
+            sbt = load_latest_selection_backtest()
+            if sbt and sbt["chart_path"]:
+                return self._send_file(sbt["chart_path"], "image/png")
+            return self._not_found()
+        if path == "/selection-backtest/download/report":
+            sbt = load_latest_selection_backtest()
+            if sbt and sbt["md_path"]:
+                return self._send_file(sbt["md_path"], "text/markdown; charset=utf-8", download=True)
+            return self._not_found()
+        if path == "/selection-backtest/download/summary":
+            sbt = load_latest_selection_backtest()
+            if sbt:
+                return self._send_file(sbt["summary_path"], "text/csv; charset=utf-8", download=True)
+            return self._not_found()
+        if path == "/selection-backtest/download/trades":
+            sbt = load_latest_selection_backtest()
+            if sbt and sbt["trades_path"]:
+                return self._send_file(sbt["trades_path"], "text/csv; charset=utf-8", download=True)
+            return self._not_found()
+        if path == "/pool-compare":
+            page = render_pool_compare_page()
+            return self._send_html(page) if page else self._not_found()
+        if path == "/pool-compare/download/report":
+            pc = load_latest_pool_compare()
+            if pc and pc["md_path"]:
+                return self._send_file(pc["md_path"], "text/markdown; charset=utf-8", download=True)
+            return self._not_found()
+        if path == "/pool-compare/download/csv":
+            pc = load_latest_pool_compare()
+            if pc:
+                return self._send_file(pc["csv_path"], "text/csv; charset=utf-8", download=True)
             return self._not_found()
         return self._not_found()
 
