@@ -45,6 +45,12 @@ _PD_EXPORTS = config.output_dir("pool_diagnosis", "exports")
 _OB_REPORTS = config.output_dir("observation", "reports")
 _OB_EXPORTS = config.output_dir("observation", "exports")
 
+_FR_REPORTS = config.output_dir("failure_review", "reports")
+_FR_EXPORTS = config.output_dir("failure_review", "exports")
+
+# 外部 Streamlit 只读看板地址（嵌入用；本服务不托管、不迁移 Streamlit）
+STREAMLIT_URL = "http://127.0.0.1:8501"
+
 
 # =====================================================
 # 数据读取（只读本地产物）
@@ -180,6 +186,23 @@ def load_latest_observation_plan() -> Optional[Dict]:
     return {"token": token, "pool": pool, "csv_path": csv,
             "md_path": md if md else None, "df": df,
             "md_text": md.read_text(encoding="utf-8") if md else ""}
+
+
+def load_latest_failure_review() -> Optional[Dict]:
+    csv = _latest(_FR_EXPORTS, "failure_review_*.csv")
+    if csv is None:
+        return None
+    token = _token_of(csv)
+    md = _FR_REPORTS / f"failure_review_{token}.md"
+    try:
+        df = pd.read_csv(csv, encoding="utf-8-sig", dtype={"代码": str})
+    except Exception:
+        df = pd.DataFrame()
+    md_text = md.read_text(encoding="utf-8") if md.exists() else ""
+    return {"token": token, "csv_path": csv, "md_path": md if md.exists() else None,
+            "df": df, "md_text": md_text,
+            "type_section": _md_section(md_text, "失败类型归类"),
+            "advice": _md_section(md_text, "改进观察建议（研究方向，非交易指令）")}
 
 
 # =====================================================
@@ -523,6 +546,84 @@ def render_observation_plan_page() -> Optional[str]:
     return _page("候选股观察计划", "".join(parts))
 
 
+def _failure_review_home_card() -> str:
+    fr = load_latest_failure_review()
+    if fr is None:
+        return ('<div class="card"><h2>失败案例复盘</h2>'
+                '<div class="empty">暂无复盘。运行：<br>'
+                '<code>python -m backtest_agent_v1.failure_review_cli --pool tech_30_v2</code>'
+                '</div></div>')
+    n = 0 if fr["df"].empty else len(fr["df"])
+    top_type = ""
+    if not fr["df"].empty and "失败类型" in fr["df"].columns:
+        vc = fr["df"]["失败类型"].value_counts()
+        if len(vc):
+            top_type = f"{vc.index[0]}（{int(vc.iloc[0])}笔）"
+    return (f'<div class="card"><h2>失败案例复盘</h2>'
+            f'<p class="muted">亏损交易 {n} 笔　|　最多失败类型：{_esc(top_type or "—")}</p>'
+            f'<div class="links"><a href="/failure-review">查看复盘详情</a></div></div>')
+
+
+def render_failure_review_page() -> Optional[str]:
+    fr = load_latest_failure_review()
+    if fr is None:
+        return None
+    parts = ['<div class="card"><h2>失败案例复盘（tech_30_v2 历史回测）</h2>'
+             '<div class="links"><a href="/">← 返回首页</a></div>'
+             '<p class="muted">仅对历史模拟亏损交易做归因；改进建议为研究方向，'
+             '不构成任何买入/卖出建议。本页只读。</p></div>']
+    df = fr["df"]
+    if not df.empty and "失败类型" in df.columns:
+        vc = df["失败类型"].value_counts()
+        cells = "".join(f'<div class="meta-item"><div class="k">{_esc(t)}</div>'
+                        f'<div class="v">{int(c)}</div></div>' for t, c in vc.items())
+        parts.append(f'<div class="card"><h2>失败类型归类</h2>'
+                     f'<div class="meta-grid">{cells}</div></div>')
+    if not df.empty:
+        show = [c for c in ["代码", "名称", "入场日", "出场日", "收益率%", "持仓天数",
+                            "退出原因", "失败类型"] if c in df.columns]
+        head = "".join(f"<th>{_esc(c)}</th>" for c in show)
+        body = ""
+        for _, r in df.iterrows():
+            tds = "".join(f'<td class="{"num" if c in ("收益率%","持仓天数") else ""}">'
+                          f'{_esc("" if pd.isna(r.get(c)) else r.get(c))}</td>' for c in show)
+            body += f"<tr>{tds}</tr>"
+        parts.append(f'<div class="card"><h2>亏损交易列表（{len(df)} 笔）</h2>'
+                     f'<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>')
+    if fr["advice"]:
+        items = [re.sub(r"^[-*]\s*", "", ln).strip()
+                 for ln in fr["advice"].splitlines() if ln.strip().startswith(("-", "*"))]
+        lis = "".join(f"<li>{_esc(x)}</li>" for x in items)
+        parts.append(f'<div class="card"><h2>改进观察建议（研究方向，非交易指令）</h2>'
+                     f'<ul class="reasons">{lis}</ul></div>')
+    links = []
+    if fr["md_path"]:
+        links.append('<a href="/failure-review/download/report">下载复盘报告 .md</a>')
+    links.append('<a href="/failure-review/download/csv">下载亏损明细 .csv</a>')
+    parts.append(f'<div class="card"><h2>报告与导出</h2><div class="links">{"".join(links)}</div></div>')
+    return _page("失败案例复盘", "".join(parts))
+
+
+def render_realtime_page() -> str:
+    """实时看板：优先 iframe 嵌入外部 Streamlit 只读看板，失败则用按钮在新标签打开。"""
+    url = _esc(STREAMLIT_URL)
+    content = (
+        '<div class="card"><h2>实时看板（Streamlit 只读）</h2>'
+        f'<p class="muted">下方嵌入外部 Streamlit 只读看板（{url}）。'
+        '该看板由独立的 Streamlit 进程提供，本入口仅做只读嵌入，不托管、不迁移它。<br>'
+        '若下方区域空白、加载失败或被浏览器/对方的 X-Frame-Options 拦截，请点下方按钮在新标签打开。</p>'
+        f'<div class="links"><a class="btn" href="{url}" target="_blank" rel="noopener">'
+        '在新标签打开实时看板 →</a></div></div>'
+        '<div class="card">'
+        f'<iframe src="{url}" class="rt-frame" title="实时看板" loading="lazy"'
+        ' referrerpolicy="no-referrer"></iframe>'
+        '<p class="muted">提示：如未显示，多为 Streamlit 未启动（请在 8501 端口运行你的 Streamlit 只读看板），'
+        '或其禁止被 iframe 嵌入——此时用上方按钮跳转打开即可。本页只读，无任何交易/下单接口。</p>'
+        '</div>'
+    )
+    return _page("实时看板", content)
+
+
 def render_home() -> str:
     scan = load_latest_scan()
     if scan is None:
@@ -532,7 +633,8 @@ def render_home() -> str:
                    '<code>python -m backtest_agent_v1.scan_cli --model strong --mode loose '
                    '--symbols 600519,000858 --limit 50</code></div></div>' +
                    _selection_backtest_home_card() + _pool_compare_home_card() +
-                   _pool_diagnosis_home_card() + _observation_home_card())
+                   _pool_diagnosis_home_card() + _observation_home_card() +
+                   _failure_review_home_card())
         return _page("系统1 只读 Dashboard", content)
     content = (
         _intro_card() + _disclaimer_card() + _meta_card(scan) +
@@ -540,7 +642,8 @@ def render_home() -> str:
         _risk_card(scan["df"], scan["general_risk"]) +
         _reject_card(scan["reject_summary"]) + _links_card(scan) +
         _selection_backtest_home_card() + _pool_compare_home_card() +
-        _pool_diagnosis_home_card() + _observation_home_card()
+        _pool_diagnosis_home_card() + _observation_home_card() +
+        _failure_review_home_card()
     )
     return _page("系统1 只读 Dashboard", content)
 
@@ -570,6 +673,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self._send_html(render_home())
         if path == "/static/style.css":
             return self._send_file(_STATIC / "style.css", "text/css; charset=utf-8")
+        if path == "/realtime":
+            return self._send_html(render_realtime_page())
         if path == "/report/latest":
             page = render_report_page()
             return self._send_html(page) if page else self._not_found()
@@ -644,6 +749,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ob = load_latest_observation_plan()
             if ob:
                 return self._send_file(ob["csv_path"], "text/csv; charset=utf-8", download=True)
+            return self._not_found()
+        if path == "/failure-review":
+            page = render_failure_review_page()
+            return self._send_html(page) if page else self._not_found()
+        if path == "/failure-review/download/report":
+            fr = load_latest_failure_review()
+            if fr and fr["md_path"]:
+                return self._send_file(fr["md_path"], "text/markdown; charset=utf-8", download=True)
+            return self._not_found()
+        if path == "/failure-review/download/csv":
+            fr = load_latest_failure_review()
+            if fr:
+                return self._send_file(fr["csv_path"], "text/csv; charset=utf-8", download=True)
             return self._not_found()
         return self._not_found()
 
