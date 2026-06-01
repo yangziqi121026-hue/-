@@ -8,14 +8,28 @@ from backtest_agent_v1 import stock_pools as sp
 class TestPools(unittest.TestCase):
     def test_pool_names(self):
         self.assertEqual(set(sp.list_pools()),
-                         {"core_30", "tech_30", "ai_robot_30", "new_energy_30", "core_50"})
+                         {"core_30", "tech_30", "tech_30_v2", "ai_robot_30",
+                          "new_energy_30", "core_50"})
 
     def test_pool_sizes(self):
         self.assertEqual(len(sp.get_pool("core_30")), 30)
         self.assertEqual(len(sp.get_pool("tech_30")), 30)
+        self.assertEqual(len(sp.get_pool("tech_30_v2")), 30)
         self.assertEqual(len(sp.get_pool("ai_robot_30")), 30)
         self.assertEqual(len(sp.get_pool("new_energy_30")), 30)
         self.assertEqual(len(sp.get_pool("core_50")), 50)
+
+    def test_tech_30_v2_derivation(self):
+        v2 = set(sp.get_pool("tech_30_v2"))
+        tech = set(sp.get_pool("tech_30"))
+        ejected = {"300454", "300502", "002049", "688036", "002371",
+                   "603501", "300308", "000977", "300223", "688008", "603986"}
+        # 踢出的 11 只不在 v2；原 tech_30 不被修改
+        self.assertEqual(v2 & ejected, set())
+        self.assertEqual(len(sp.get_pool("tech_30")), 30)
+        # 19 只来自 tech_30 + 11 只池外
+        self.assertEqual(len(v2 & tech), 19)
+        self.assertEqual(len(v2 - tech), 11)
 
     def test_pools_are_6digit_and_unique(self):
         for name in sp.list_pools():

@@ -24,12 +24,15 @@ class TestIdentify(unittest.TestCase):
         self.assertEqual(pc.identify_pool(traded, 10), "原10只池")
 
     def test_tech_30_by_exclusive(self):
-        # 000063 中兴通讯只在 tech_30
-        self.assertIn("000063", sp.get_pool("tech_30"))
-        self.assertEqual(pc.identify_pool(["000063"], 30), "tech_30")
+        # 300454 深信服只在 tech_30（被 v2 踢出，故不在 tech_30_v2，也不在 ai_robot）
+        self.assertIn("300454", sp.get_pool("tech_30"))
+        self.assertNotIn("300454", sp.get_pool("tech_30_v2"))
+        self.assertEqual(pc.identify_pool(["300454"], 30), "tech_30")
 
     def test_ai_robot_by_exclusive(self):
-        self.assertEqual(pc.identify_pool(["688256"], 30), "ai_robot_30")  # 寒武纪
+        # 单标的因 tech_30_v2 重叠已不唯一；用「ai_robot 独有组合」消歧：
+        # 688008 在 ai_robot+tech_30(非v2)，688256 在 ai_robot+v2(非tech_30) → 仅 ai_robot 同时含两者
+        self.assertEqual(pc.identify_pool(["688008", "688256"], 30), "ai_robot_30")
 
     def test_core_30_by_exclusive(self):
         self.assertEqual(pc.identify_pool(["600519"], 30), "core_30")  # 茅台

@@ -39,6 +39,9 @@ _SB_CHARTS = config.output_dir("selection_backtest", "charts")
 _PC_REPORTS = config.output_dir("pool_compare", "reports")
 _PC_EXPORTS = config.output_dir("pool_compare", "exports")
 
+_PD_REPORTS = config.output_dir("pool_diagnosis", "reports")
+_PD_EXPORTS = config.output_dir("pool_diagnosis", "exports")
+
 
 # =====================================================
 # 数据读取（只读本地产物）
@@ -137,6 +140,25 @@ def load_latest_pool_compare() -> Optional[Dict]:
     return {"token": token, "csv_path": csv, "md_path": md if md.exists() else None,
             "df": df, "md_text": md_text,
             "conclusion": _md_section(md_text, "结论（数据驱动）")}
+
+
+def load_latest_pool_diagnosis() -> Optional[Dict]:
+    csv = _latest(_PD_EXPORTS, "pool_diagnosis_*.csv")
+    if csv is None:
+        return None
+    token = _token_of(csv)
+    m = re.search(r"pool_diagnosis_(.+?)_\d{8}_\d{6}", csv.name)
+    pool = m.group(1) if m else "?"
+    mds = sorted(_PD_REPORTS.glob(f"pool_diagnosis_*_{token}.md"))
+    md = mds[0] if mds else None
+    try:
+        df = pd.read_csv(csv, encoding="utf-8-sig", dtype={"代码": str})
+    except Exception:
+        df = pd.DataFrame()
+    md_text = md.read_text(encoding="utf-8") if md else ""
+    return {"token": token, "pool": pool, "csv_path": csv,
+            "md_path": md if md else None, "df": df, "md_text": md_text,
+            "watch": _md_section(md_text, "替补候选观察名单（成分内未被选中交易的标的）")}
 
 
 # =====================================================
@@ -379,6 +401,61 @@ def render_pool_compare_page() -> Optional[str]:
     return _page("股票池横向对比", "".join(parts))
 
 
+def _pool_diagnosis_home_card() -> str:
+    pd_ = load_latest_pool_diagnosis()
+    if pd_ is None:
+        return ('<div class="card"><h2>股票池成分贡献诊断</h2>'
+                '<div class="empty">暂无诊断。运行：<br>'
+                '<code>python -m backtest_agent_v1.pool_diagnosis_cli --pool tech_30</code></div></div>')
+    df = pd_["df"]
+    cnt = df["建议"].value_counts().to_dict() if (not df.empty and "建议" in df.columns) else {}
+    keys = [("保留", "保留"), ("观察", "观察"), ("踢出", "踢出")]
+    cells = "".join(
+        f'<div class="meta-item"><div class="k">{label}</div>'
+        f'<div class="v">{int(cnt.get(k, 0))}</div></div>' for label, k in keys)
+    return (f'<div class="card"><h2>股票池成分贡献诊断</h2>'
+            f'<p class="muted">最新：{_esc(pd_["pool"])}</p>'
+            f'<div class="meta-grid">{cells}</div>'
+            f'<div class="links" style="margin-top:14px">'
+            f'<a href="/pool-diagnosis">查看诊断详情</a></div></div>')
+
+
+def render_pool_diagnosis_page() -> Optional[str]:
+    pd_ = load_latest_pool_diagnosis()
+    if pd_ is None:
+        return None
+    parts = [f'<div class="card"><h2>股票池成分贡献诊断（{_esc(pd_["pool"])}）</h2>'
+             '<div class="links"><a href="/">← 返回首页</a></div>'
+             '<p class="muted">基于已有回测交易明细，未重跑回测；保留/观察/踢出为研究分级，'
+             '替补候选仅观察、不自动替换，不构成任何买入/卖出建议。</p></div>']
+    df = pd_["df"]
+    if not df.empty:
+        show = [c for c in ["代码", "名称", "交易次数", "总收益贡献", "平均单笔收益", "胜率",
+                            "盈亏比", "最大单笔亏损", "止损占比", "第一目标达成次数",
+                            "第二目标达成次数", "平均持仓天数", "综合评分", "建议", "建议理由"]
+                if c in df.columns]
+        head = "".join(f"<th>{_esc(c)}</th>" for c in show)
+        body = ""
+        for _, r in df.iterrows():
+            tds = ""
+            for c in show:
+                v = r.get(c)
+                cls = "num" if c not in ("代码", "名称", "建议", "建议理由") else ""
+                tds += f'<td class="{cls}">{_esc("" if pd.isna(v) else v)}</td>'
+            body += f"<tr>{tds}</tr>"
+        parts.append(f'<div class="card"><h2>成分股贡献明细</h2>'
+                     f'<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>')
+    if pd_["watch"]:
+        parts.append(f'<div class="card"><h2>替补候选观察名单（仅观察，不自动替换）</h2>'
+                     f'<p class="muted">{_esc(pd_["watch"])}</p></div>')
+    links = []
+    if pd_["md_path"]:
+        links.append('<a href="/pool-diagnosis/download/report">下载诊断报告 .md</a>')
+    links.append('<a href="/pool-diagnosis/download/csv">下载诊断表 .csv</a>')
+    parts.append(f'<div class="card"><h2>报告与导出</h2><div class="links">{"".join(links)}</div></div>')
+    return _page("股票池成分贡献诊断", "".join(parts))
+
+
 def render_home() -> str:
     scan = load_latest_scan()
     if scan is None:
@@ -387,14 +464,16 @@ def render_home() -> str:
                    '<div class="empty">scan_exports 下还没有扫描结果。请先运行：<br>'
                    '<code>python -m backtest_agent_v1.scan_cli --model strong --mode loose '
                    '--symbols 600519,000858 --limit 50</code></div></div>' +
-                   _selection_backtest_home_card() + _pool_compare_home_card())
+                   _selection_backtest_home_card() + _pool_compare_home_card() +
+                   _pool_diagnosis_home_card())
         return _page("系统1 只读 Dashboard", content)
     content = (
         _intro_card() + _disclaimer_card() + _meta_card(scan) +
         _candidates_card(scan["df"]) + _reasons_card(scan["df"]) +
         _risk_card(scan["df"], scan["general_risk"]) +
         _reject_card(scan["reject_summary"]) + _links_card(scan) +
-        _selection_backtest_home_card() + _pool_compare_home_card()
+        _selection_backtest_home_card() + _pool_compare_home_card() +
+        _pool_diagnosis_home_card()
     )
     return _page("系统1 只读 Dashboard", content)
 
@@ -472,6 +551,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             pc = load_latest_pool_compare()
             if pc:
                 return self._send_file(pc["csv_path"], "text/csv; charset=utf-8", download=True)
+            return self._not_found()
+        if path == "/pool-diagnosis":
+            page = render_pool_diagnosis_page()
+            return self._send_html(page) if page else self._not_found()
+        if path == "/pool-diagnosis/download/report":
+            pdg = load_latest_pool_diagnosis()
+            if pdg and pdg["md_path"]:
+                return self._send_file(pdg["md_path"], "text/markdown; charset=utf-8", download=True)
+            return self._not_found()
+        if path == "/pool-diagnosis/download/csv":
+            pdg = load_latest_pool_diagnosis()
+            if pdg:
+                return self._send_file(pdg["csv_path"], "text/csv; charset=utf-8", download=True)
             return self._not_found()
         return self._not_found()
 
