@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{TITLE}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">A股只读投研 Dashboard · 系统1</div>
+    <div class="badges">
+      <span class="badge ok">只读</span>
+      <span class="badge ok">不下单</span>
+      <span class="badge ok">不接实盘</span>
+      <span class="badge ok">仅 GET</span>
+    </div>
+  </header>
+  <main class="container">
+    {{CONTENT}}
+  </main>
+  <footer class="footer">
+    <p class="disclaimer">{{DISCLAIMER}}</p>
+    <p class="muted">本页面为只读展示，无任何交易/下单/POST 接口。</p>
+  </footer>
+</body>
+</html>
